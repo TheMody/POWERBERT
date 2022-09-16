@@ -21,12 +21,11 @@ from plot import plot_TSNE_clustering
 from torch_geometric.data import Data
 from sklearn.preprocessing import OneHotEncoder
 # Fixing seed for reproducibility
+from transformers import BertTokenizer
 SEED = 999
 random.seed(SEED)
 np.random.seed(SEED)
 
-ACTIVE_METRIC_NAME = 'accuracy'
-REWARD_ATTR_NAME = 'objective'
 datasets = [ "mnli","cola", "sst2", "mrpc","qqp", "rte"]#"qqp", "rte" 
 eval_ds = [ "rtesmall", "qqpsmall","qqp", "rte"]
 
@@ -43,21 +42,18 @@ def train(args, config):
     dataset = config["DEFAULT"]["dataset"]
     print("dataset:", dataset)
     log_file = config["DEFAULT"]["directory"]+"/log_file.csv"
-    load = config["DEFAULT"]["load"] == "True"
+    reduce = config["DEFAULT"]["reduce"] == "True"
     
-        
-    print("running baseline")
-    num_classes = 2
-    if "mnli" in dataset:
-        num_classes = 3
-    num_classes2 = 2
-    #  print("loading model")
-
-  
-        
+    print("loading dataset")
+    ds = load_wiki()
+    
+    print("building the transformer")
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
     device = torch.device('cuda')
-    model = TransformerPredictor().to(device)
-    model.fit()
+    model = TransformerPredictor(tokenizer.vocab_size, 768, tokenizer.vocab_size,12,12, batch_size= batch_size, reduce=reduce).to(device)
+    print("fitting")
+    model.fitmlm(ds, max_epochs)
+    torch.save(model, config["DEFAULT"]["directory"]+"/model.pt")
 
 
         

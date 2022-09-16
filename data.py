@@ -195,7 +195,7 @@ def load_data(name="sst2"):
     return X,X_val, X_test, torch.LongTensor(y), torch.LongTensor(y_val), torch.LongTensor(y_test)
 
 def load_wiki():
-    data = tfds.load('wiki40b/en', split="train[:1000]", shuffle_files=False)
+    data = tfds.load('wiki40b/en', split="train", shuffle_files=False)
     
     X = [str(e["text"].numpy()) for e in data]
     return X
