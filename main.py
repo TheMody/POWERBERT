@@ -5,7 +5,7 @@ import configparser
 from logger import Logger
 import shutil
 import sys
-from train import train
+from train import train, test
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '3'
 
 def main():
@@ -31,7 +31,11 @@ def main():
             shutil.copy2(file, config["DEFAULT"]["directory"] )
             
     sys.stdout = Logger(open(config["DEFAULT"]["directory"] +"/SysOut.txt","w"))
-    train(args, config)
+    if config["DEFAULT"]["train"] == "True":
+        train(args, config)
+    if config["DEFAULT"]["test"] == "True":
+        test(args, config)
+        
     
 if __name__ == '__main__':
     main()

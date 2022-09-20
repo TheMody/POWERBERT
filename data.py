@@ -186,12 +186,6 @@ def load_data(name="sst2"):
         X = list(X[new_ids])
         
 
-#     print("validation: ",X_val[0:2])
-#     print(y_val[0:2])
-#     print("train", X[0:2])
-#     print(y[0:2])
-#     print("test" , X_test[0:2])
-#     print(y_test[0:2])
     return X,X_val, X_test, torch.LongTensor(y), torch.LongTensor(y_val), torch.LongTensor(y_test)
 
 def load_wiki():

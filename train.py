@@ -1,25 +1,12 @@
 import torch
-import torch.nn as nn
 
-# AutoGluon and HPO tools
-import autogluon.core as ag
-import pandas as pd
 import numpy as np
 import random
-import math
 from embedder import TransformerPredictor
 import matplotlib.pyplot as plt
 from sklearn.model_selection import train_test_split
 import torch
-from sklearn.model_selection import ShuffleSplit
-from sklearn.model_selection import cross_val_score
-from sklearn.cluster import KMeans
-import time
-from data import load_data, SimpleDataset, load_wiki
-from torch_geometric.loader import DataLoader
-from plot import plot_TSNE_clustering
-from torch_geometric.data import Data
-from sklearn.preprocessing import OneHotEncoder
+from data import load_data, load_wiki
 # Fixing seed for reproducibility
 from transformers import BertTokenizer
 SEED = 999
@@ -59,4 +46,17 @@ def train(args, config):
         
 
     torch.cuda.empty_cache()
+
+def test(args, config):
+
+    dataset = config["DEFAULT"]["dataset"]
+    print("dataset:", dataset)
+    X,X_val, _, y, y_val, _ = load_data(dataset)
+    max_epochs = int(config["DEFAULT"]["epochs"])
+    num_classes = 2
+    model = torch.load(config["DEFAULT"]["load"]+"/model.pt")
+    model.lr = 2e-5
+    model.fit(X,y, max_epochs ,num_classes )
+    acc = model.evaluate(X_val, y_val)
+    print("acc", acc)
 
