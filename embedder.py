@@ -310,11 +310,12 @@ class TransformerPredictor(nn.Module):
         loss = self.loss(output, labels)
         return loss
 
-    def fitmlm(self,dataset, epochs):
+    def fitmlm(self,dataset, epochs, checkpoint_pth = None):
         self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
                                                warmup = 10000 ,
                                                 max_iters = math.ceil(len(dataset)*epochs  / self.batch_size))
         wandb.init(project="my-test-project")
+        wandb.watch(self)
         for e in range(epochs):
             print("at epoch", e)
             runinngloss = 0.0
@@ -347,8 +348,10 @@ class TransformerPredictor(nn.Module):
                         wandb.log({"acc": acc.item()/self.batch_size})
                     print( runinngloss/ stepsperloss, "at", ul , "of", len(dataset), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(dataset) / self.batch_size) -i) * (time.time()-start))
                     runinngloss = 0.0
+                if not checkpoint_pth == None and i % np.max((1,int((len(dataset)/self.batch_size)*0.1))) == 0:
+                    torch.save(self, checkpoint_pth)
 
-                    
+
     def fit(self,X,y, epochs, num_classes):
         self.create_new_head(num_classes)
         self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
@@ -361,6 +364,7 @@ class TransformerPredictor(nn.Module):
             "num_classes": num_classes,
             "batch_size": self.batch_size
             }
+        wandb.watch(self)
         for e in range(epochs):
             print("at epoch", e)
             runinngloss = 0.0

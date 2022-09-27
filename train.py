@@ -40,7 +40,7 @@ def train(args, config):
 
     model = TransformerPredictor(tokenizer.vocab_size, 768, tokenizer.vocab_size,12,12, batch_size= batch_size, reduce=reduce).to(device)
     print("fitting")
-    model.fitmlm(ds, max_epochs)
+    model.fitmlm(ds, max_epochs, config["DEFAULT"]["directory"]+"/model.pt")
     torch.save(model, config["DEFAULT"]["directory"]+"/model.pt")
 
 
