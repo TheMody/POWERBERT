@@ -1,0 +1,12 @@
+[DEFAULT]
+batch_size = 32
+checkpoint = None
+directory = results/BERTfine
+seed = 42
+epochs = 1
+num_trials = 50
+dataset = sst2
+reduce = False
+test = False
+train = True
+load = results/BERT
