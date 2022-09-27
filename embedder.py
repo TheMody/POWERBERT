@@ -12,8 +12,8 @@ from torch.autograd import variable
 from torch.utils.data import DataLoader
 from data import load_wiki
 import os
+import wandb
 logging.set_verbosity_error()
-##device = torch.device('cuda')
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 
@@ -40,7 +40,9 @@ def scaled_dot_product(q, k, v, mask=None):
     attn_logits = torch.matmul(q, k.transpose(-2, -1))
     attn_logits = attn_logits / math.sqrt(d_k)
     if mask is not None:
-        attn_logits = attn_logits.masked_fill(mask.unsqueeze(1).unsqueeze(1) == 0, -9e15) #maybe a bit slow to do 2 unsqueeze here
+        # print(mask.shape)
+        # print(attn_logits.shape)
+        attn_logits = attn_logits.masked_fill(mask.unsqueeze(1).unsqueeze(-1) == 0, -9e15) #maybe a bit slow to do 2 unsqueeze here
     attention = F.softmax(attn_logits, dim=-1)
     values = torch.matmul(attention, v)
     return values, attention
@@ -200,7 +202,7 @@ class PositionalEncoding(nn.Module):
 
 class TransformerPredictor(nn.Module):
 
-    def __init__(self, input_dim, model_dim, num_classes, num_heads, num_layers,reduce = False, lr=1e-4,batch_size=8, dropout=0.1, input_dropout=0.1):
+    def __init__(self, input_dim, model_dim, num_classes, num_heads, num_layers,reduce = False, lr=1e-4,batch_size=8, dropout=0.1, weight_decay = 1e-2):
         """
         Inputs:
             input_dim - Hidden dimensionality of the input
@@ -210,11 +212,9 @@ class TransformerPredictor(nn.Module):
             num_layers - Number of encoder blocks to use.
             lr - Learning rate in the optimizer
             dropout - Dropout to apply inside the model
-            input_dropout - Dropout to apply on the input features
         """
         super().__init__()
         self.dropout = dropout
-        self.input_dropout = input_dropout
         self.input_dim = input_dim
         self.model_dim = model_dim
         self.num_classes = num_classes
@@ -225,8 +225,7 @@ class TransformerPredictor(nn.Module):
         self.reduce = reduce
         self.batch_size = batch_size
         self.padding = True
-        self.weight_decay = 0.01
-        
+        self.weight_decay = weight_decay
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
         self._create_model()
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay = self.weight_decay)
@@ -235,7 +234,9 @@ class TransformerPredictor(nn.Module):
         # Input dim -> Model dim
         self.input_net = nn.Sequential(
           #  nn.Dropout(self.input_dropout),
-            nn.Linear(self.input_dim, self.model_dim)
+            nn.Linear(self.input_dim, self.model_dim),
+            # nn.ReLU(inplace=True),
+            # nn.Linear(self.model_dim, self.model_dim),
         )
         self.seg_embedding = nn.Sequential(nn.Linear(1, self.model_dim)
         )
@@ -252,7 +253,8 @@ class TransformerPredictor(nn.Module):
             nn.LayerNorm(self.model_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout),
-            nn.Linear(self.model_dim, self.num_classes)
+            nn.Linear(self.model_dim, self.num_classes),
+      #      nn.Softmax(dim = -1)
         )
 
     def create_new_head(self, num_classes):
@@ -261,7 +263,8 @@ class TransformerPredictor(nn.Module):
             nn.LayerNorm(self.model_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout),
-            nn.Linear(self.model_dim, num_classes)
+            nn.Linear(self.model_dim, num_classes),
+       #     nn.Softmax(dim = -1)
         )
         self.output_net.to(device)
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay = self.weight_decay)
@@ -311,9 +314,11 @@ class TransformerPredictor(nn.Module):
         self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
                                                warmup = 10000 ,
                                                 max_iters = math.ceil(len(dataset)*epochs  / self.batch_size))
-
+        wandb.init(project="my-test-project")
         for e in range(epochs):
             print("at epoch", e)
+            runinngloss = 0.0
+            stepsperloss = 0
             for i in range(math.ceil(len(dataset) / self.batch_size)):
                 start = time.time()
                 ul = min((i+1) * self.batch_size, len(dataset))
@@ -326,23 +331,40 @@ class TransformerPredictor(nn.Module):
                 labels = labels.to(device)
                 self.zero_grad()
                 output, trackarray = self(input["input_ids"], mask = input["attention_mask"])
-                labels = torch.cat( [labels[i,trackarray[i]].unsqueeze(0) for i in range(labels.shape[0])] )
+                #labels = torch.cat( [labels[i,trackarray[i]].unsqueeze(0) for i in range(labels.shape[0])] )
                 loss = self.compute_mlm_loss(output,labels)
                 loss.backward()
-
+                stepsperloss += 1
+                runinngloss += loss.item()
                 self.optimizer.step()
                 self.scheduler.step()
                 if i % np.max((1,int((len(dataset)/self.batch_size)*0.001))) == 0:
-                    print( loss.item(), "at", ul , "of", len(dataset), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(dataset) / self.batch_size) -i) * (time.time()-start))
-                
+                    wandb.log({"loss": runinngloss / stepsperloss})
+                    wandb.log({"lr": self.scheduler.get_last_lr()[0]})
+                    with torch.no_grad():
+                        y_pred = torch.argmax(output,dim = -1)
+                        acc =  torch.sum(y_pred == labels)
+                        wandb.log({"acc": acc.item()/self.batch_size})
+                    print( runinngloss/ stepsperloss, "at", ul , "of", len(dataset), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(dataset) / self.batch_size) -i) * (time.time()-start))
+                    runinngloss = 0.0
+
+                    
     def fit(self,X,y, epochs, num_classes):
         self.create_new_head(num_classes)
         self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
                                                warmup = math.ceil(len(X)*epochs *0.01 / self.batch_size) ,
                                                 max_iters = math.ceil(len(X)*epochs  / self.batch_size))
-
+        wandb.init(project="my-test-project")
+        wandb.config = {
+            "learning_rate": self.lr,
+            "num_layers": self.num_layers,
+            "num_classes": num_classes,
+            "batch_size": self.batch_size
+            }
         for e in range(epochs):
             print("at epoch", e)
+            runinngloss = 0.0
+            stepsperloss = 0
             for i in range(math.ceil(len(X) / self.batch_size)):
                 start = time.time()
                 ul = min((i+1) * self.batch_size, len(X))
@@ -353,16 +375,30 @@ class TransformerPredictor(nn.Module):
                 batch_y = batch_y.to(device)
                 batch_x = batch_x.to(device)
                 self.optimizer.zero_grad()
-                y_pred,_ = self(batch_x["input_ids"],seg_emb = batch_x["token_type_ids"], mask = batch_x["attention_mask"])
+                y_pred,_ = self(batch_x["input_ids"], mask = batch_x["attention_mask"],seg_emb = batch_x["token_type_ids"])
+                # print(y_pred.shape)
+                # print(y_pred[:,0])
+                # print(batch_y)
                 loss = self.loss(y_pred[:,0], batch_y)    
                 loss.backward()
 
-          
+                runinngloss += loss.item()
+                stepsperloss += 1
                 self.optimizer.step()
                 self.scheduler.step()
                 if i % np.max((1,int((len(X)/self.batch_size)*0.001))) == 0:
-                    print( loss.item(), "at", ul , "of", len(X), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(X) / self.batch_size) -i) * (time.time()-start))
-        
+                    wandb.log({"loss": runinngloss / stepsperloss})
+                 #   print("lr", self.scheduler.get_last_lr())
+                    wandb.log({"lr": self.scheduler.get_last_lr()[0]})
+                    with torch.no_grad():
+                        y_pred = torch.argmax(y_pred[:,0],dim = -1)
+                        acc =  torch.sum(y_pred == batch_y)
+                        wandb.log({"acc": acc.item()/self.batch_size})
+                    print( runinngloss/ stepsperloss, "at", ul , "of", len(X), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(X) / self.batch_size) -i) * (time.time()-start))
+                    runinngloss = 0.0
+                    stepsperloss = 0
+
+
     @torch.no_grad()
     def evaluate(self,X,y):
         acc  = 0.0
