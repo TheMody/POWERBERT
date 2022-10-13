@@ -1,4 +1,3 @@
-from transformers import BertTokenizer
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -8,13 +7,15 @@ import time
 import numpy as np
 from transformers.utils import logging
 from transformers import glue_convert_examples_to_features, DataCollatorForLanguageModeling
+from transformers import BertTokenizer, BertModel
+from transformers.models.bert.modeling_bert import BertEmbeddings
 from torch.autograd import variable
 from torch.utils.data import DataLoader
 from data import load_wiki
-import os
 import wandb
 logging.set_verbosity_error()
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+from hourglass.hourglass_transformer_pytorch.hourglass_transformer_pytorch import HourglassTransformerLM
 
 
 class CosineWarmupScheduler(optim.lr_scheduler._LRScheduler):
@@ -40,9 +41,7 @@ def scaled_dot_product(q, k, v, mask=None):
     attn_logits = torch.matmul(q, k.transpose(-2, -1))
     attn_logits = attn_logits / math.sqrt(d_k)
     if mask is not None:
-        # print(mask.shape)
-        # print(attn_logits.shape)
-        attn_logits = attn_logits.masked_fill(mask.unsqueeze(1).unsqueeze(-1) == 0, -9e15) #maybe a bit slow to do 2 unsqueeze here
+        attn_logits = attn_logits.masked_fill(mask == 0, -9e15) 
     attention = F.softmax(attn_logits, dim=-1)
     values = torch.matmul(attention, v)
     return values, attention
@@ -138,15 +137,19 @@ class TransformerEncoder(nn.Module):
     def __init__(self, num_layers, d_model, n_head, reduce = False):
         super().__init__()
         self.reduce = reduce
-        self.layers = nn.ModuleList([EncoderBlock(input_dim = d_model, num_heads = n_head) for _ in range(num_layers)])
+        self.layers = nn.ModuleList([nn.TransformerEncoderLayer(d_model=d_model, nhead=n_head) for _ in range(num_layers)])
 
     def forward(self, x, mask=None):
       #  trackarray = torch.zeroes(x.shape[0,1])
         trackarray = torch.cat( [torch.LongTensor(list(range(x.shape[1])) ).unsqueeze(0) for i in range(x.shape[0])])
+    #    mask = torch.matmul(mask.unsqueeze(-1).transpose(1,2).float(),mask.unsqueeze(-1).float()).long().unsqueeze(1)
+        mask = mask.transpose(0,1)#.bool()
+      #  print(mask)
+      #  print(mask.type())
       #  print(trackarray)
         for a,l in enumerate(self.layers):
           #  print("shape of x at layer ",x.shape)
-            x,att = l(x, mask=mask)
+            x,att = l(x, src_key_padding_mask=mask)
           #  print("shape of x at layer after compute",x.shape)
 
             if self.reduce and a % 3 == 0:
@@ -202,7 +205,7 @@ class PositionalEncoding(nn.Module):
 
 class TransformerPredictor(nn.Module):
 
-    def __init__(self, input_dim, model_dim, num_classes, num_heads, num_layers,reduce = False, lr=1e-4,batch_size=8, dropout=0.1, weight_decay = 1e-2):
+    def __init__(self, input_dim, model_dim, num_classes, num_heads, num_layers,reduce = False, lr=1e-4,batch_size=8, dropout=0.1, weight_decay = 1e-2, mode = "mlm"):
         """
         Inputs:
             input_dim - Hidden dimensionality of the input
@@ -221,32 +224,54 @@ class TransformerPredictor(nn.Module):
         self.num_layers = num_layers
         self.num_heads = num_heads
         self.lr = lr
+        self.mode = mode
         self.loss = nn.CrossEntropyLoss()
         self.reduce = reduce
         self.batch_size = batch_size
         self.padding = True
         self.weight_decay = weight_decay
         self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-        self._create_model()
+        from transformers import BertConfig
+        self.config = BertConfig()
+        
+        self.create_new_head(num_classes)
+      #  self._create_model()
+        
+       # self.model = BertModel(self.config)#.from_pretrained('bert-base-uncased')
+        self.model =  HourglassTransformerLM(num_tokens = self.config.vocab_size,dim = 768,causal = False,attn_resampling = True,
+        max_seq_len = 1024,shorten_factor = 2,depth = (3, (3, (3, 3, 3), 3), 3), heads = 12)
+
+
         self.optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay = self.weight_decay)
 
     def _create_model(self):
-        # Input dim -> Model dim
-        self.input_net = nn.Sequential(
-          #  nn.Dropout(self.input_dropout),
-            nn.Linear(self.input_dim, self.model_dim),
-            # nn.ReLU(inplace=True),
-            # nn.Linear(self.model_dim, self.model_dim),
-        )
-        self.seg_embedding = nn.Sequential(nn.Linear(1, self.model_dim)
-        )
-        # Positional encoding for sequences
-        self.positional_encoding = PositionalEncoding(d_model=self.model_dim)
-        # Transformer
-        self.transformer = TransformerEncoder(num_layers=self.num_layers,
-                                              d_model=self.model_dim,
-                                              n_head=self.num_heads,
-                                              reduce = self.reduce)
+        # Input dim -> Model 
+        self.embeddings = BertEmbeddings(self.config)
+        # self.word_embeddings = nn.Embedding(self.input_dim, self.model_dim, padding_idx=self.config.pad_token_id)
+        # self.position_embeddings = nn.Embedding(self.config.max_position_embeddings, self.model_dim)
+        # self.token_type_embeddings = nn.Embedding(1, self.model_dim)
+        # self.register_buffer("position_ids", torch.arange(self.config.max_position_embeddings).expand((1, -1)))
+        # self.emblayernorm = nn.LayerNorm(self.model_dim)
+        # self.embdropout = nn.Dropout(self.dropout)
+
+        # self.input_net = nn.Sequential(
+        #   #  nn.Dropout(self.input_dropout),
+        #     nn.Linear(self.input_dim, self.model_dim),
+        #     # nn.ReLU(inplace=True),
+        #     # nn.Linear(self.model_dim, self.model_dim),
+        # )
+        # self.seg_embedding = nn.Sequential(nn.Linear(1, self.model_dim)
+        # )
+        # # Positional encoding for sequences
+        # self.positional_encoding = PositionalEncoding(d_model=self.model_dim)
+        # # Transformer
+        encoder_layer = nn.TransformerEncoderLayer(d_model=self.model_dim, nhead=self.num_heads)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers=self.num_layers)
+        # self.transformer = TransformerEncoder(num_layers=self.num_layers,
+        #                                       d_model=self.model_dim,
+        #                                       n_head=self.num_heads,
+        #                                       reduce = self.reduce)
+
         # Output classifier per sequence lement
         self.output_net = nn.Sequential(
             nn.Linear(self.model_dim, self.model_dim),
@@ -263,13 +288,13 @@ class TransformerPredictor(nn.Module):
             nn.LayerNorm(self.model_dim),
             nn.ReLU(inplace=True),
             nn.Dropout(self.dropout),
-            nn.Linear(self.model_dim, num_classes),
-       #     nn.Softmax(dim = -1)
+            nn.Linear(self.model_dim, num_classes)
         )
         self.output_net.to(device)
-        self.optimizer = optim.Adam(self.parameters(), lr=self.lr, weight_decay = self.weight_decay)
+        self.optimizer = optim.Adam(self.parameters(), lr=self.lr)
+    
 
-    def forward(self, x, seg_emb = None, mask=None, add_positional_encoding=True):
+    def oldforward(self, x, token_type_ids = None, mask=None, add_positional_encoding=True):
         """
         Inputs:
             x - Input features of shape [Batch, SeqLen, input_dim]
@@ -277,18 +302,55 @@ class TransformerPredictor(nn.Module):
             add_positional_encoding - If True, we add the positional encoding to the input.
                                       Might not be desired for some tasks.
         """
-        
-        x = F.one_hot(x, self.input_dim)
-        x = self.input_net(x.float())
-        if add_positional_encoding:
-            x = self.positional_encoding(x)
-        if not seg_emb == None:
-            x = x + self.seg_embedding(seg_emb.unsqueeze(-1).type(torch.float))
-        x,trackarray = self.transformer(x, mask=mask)
-        
+
+        # inputs_embeds = self.word_embeddings(x)
+        # token_type_embeddings = self.token_type_embeddings(token_type_ids)
+
+        # embeddings = inputs_embeds + token_type_embeddings
+        # if add_positional_encoding:
+        #     position_ids = self.position_ids[:, : x.size()[1] ]
+        #     position_embeddings = self.position_embeddings(position_ids)
+        #     embeddings += position_embeddings
+        # embeddings = self.emblayernorm(embeddings)
+        # embedding_output = self.embdropout(embeddings)
+
+    #    print(x)
       #  print(x.shape)
+        embedding_output = self.embeddings(
+            input_ids=x,
+            token_type_ids=token_type_ids,
+        )
+
+        # x = F.one_hot(x, self.input_dim)
+        # x = self.input_net(x.float())
+        # if add_positional_encoding:
+        #     x = self.positional_encoding(x)
+        # if not token_type_ids == None:
+        #     x = x + self.seg_embedding(token_type_ids.unsqueeze(-1).type(torch.float))
+        # x = self.emblayernorm(x)
+        # embedding_output = self.embdropout(x)
+        # print(embedding_output)
+        # print(embedding_output.shape)
+        x = self.transformer(embedding_output, src_key_padding_mask=mask.transpose(0,1))
+       # print(x.shape)
+        if self.mode == "cls":
+            x = x[:,0]
+      #  print(x.shape)
+            #x,_ = torch.max(x, dim = 1)
         x = self.output_net(x)
+        #x = F.softmax(x, dim = 1)
         return x, trackarray
+
+    def forward(self, x, mask=None, token_type_ids = None):
+        x = self.model(x, mask = mask, token_type_ids = token_type_ids)   
+        
+       # x = x.last_hidden_state[:,0]
+        if self.mode == "cls":
+            x = x[:,0]
+        x = self.output_net(x)
+
+        return x
+
 
     def mask(self, input_ids, mask_token_id = 103):
         # create random array of floats in equal dimension to input_ids
@@ -316,6 +378,7 @@ class TransformerPredictor(nn.Module):
                                                 max_iters = math.ceil(len(dataset)*epochs  / self.batch_size))
         wandb.init(project="my-test-project")
         wandb.watch(self)
+        self.mode = "mlm"
         for e in range(epochs):
             print("at epoch", e)
             runinngloss = 0.0
@@ -331,8 +394,12 @@ class TransformerPredictor(nn.Module):
                 input = input.to(device)
                 labels = labels.to(device)
                 self.zero_grad()
-                output, trackarray = self(input["input_ids"], mask = input["attention_mask"])
+                # print(input)
+                # print(labels)
+                output = self(input["input_ids"], mask = input["attention_mask"].bool())
+            #    print(output.shape)
                 #labels = torch.cat( [labels[i,trackarray[i]].unsqueeze(0) for i in range(labels.shape[0])] )
+
                 loss = self.compute_mlm_loss(output,labels)
                 loss.backward()
                 stepsperloss += 1
@@ -352,11 +419,12 @@ class TransformerPredictor(nn.Module):
                     torch.save(self, checkpoint_pth)
 
 
-    def fit(self,X,y, epochs, num_classes):
+    def oldfit(self,X,y, epochs, num_classes):
         self.create_new_head(num_classes)
         self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
                                                warmup = math.ceil(len(X)*epochs *0.01 / self.batch_size) ,
                                                 max_iters = math.ceil(len(X)*epochs  / self.batch_size))
+        self.mode = "cls"
         wandb.init(project="my-test-project")
         wandb.config = {
             "learning_rate": self.lr,
@@ -379,11 +447,13 @@ class TransformerPredictor(nn.Module):
                 batch_y = batch_y.to(device)
                 batch_x = batch_x.to(device)
                 self.optimizer.zero_grad()
-                y_pred,_ = self(batch_x["input_ids"], mask = batch_x["attention_mask"],seg_emb = batch_x["token_type_ids"])
-                # print(y_pred.shape)
-                # print(y_pred[:,0])
+                # print(batch_x)
                 # print(batch_y)
-                loss = self.loss(y_pred[:,0], batch_y)    
+                y_pred,_ = self(batch_x["input_ids"], mask = batch_x["attention_mask"],token_type_ids = batch_x["token_type_ids"])
+                # print(y_pred.shape)
+                # print(y_pred)
+                # print(batch_y)
+                loss = self.loss(y_pred, batch_y)    
                 loss.backward()
 
                 runinngloss += loss.item()
@@ -395,7 +465,60 @@ class TransformerPredictor(nn.Module):
                  #   print("lr", self.scheduler.get_last_lr())
                     wandb.log({"lr": self.scheduler.get_last_lr()[0]})
                     with torch.no_grad():
-                        y_pred = torch.argmax(y_pred[:,0],dim = -1)
+                        y_pred = torch.argmax(y_pred,dim = -1)
+                        acc =  torch.sum(y_pred == batch_y)
+                        wandb.log({"acc": acc.item()/self.batch_size})
+                    print( runinngloss/ stepsperloss, "at", ul , "of", len(X), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(X) / self.batch_size) -i) * (time.time()-start))
+                    runinngloss = 0.0
+                    stepsperloss = 0
+
+    def fit(self,X,y, epochs, num_classes):
+        self.create_new_head(num_classes)
+        self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
+                                               warmup = math.ceil(len(X)*epochs *0.01 / self.batch_size) ,
+                                                max_iters = math.ceil(len(X)*epochs  / self.batch_size))
+        self.mode = "cls"
+        wandb.init(project="my-test-project")
+        wandb.config = {
+            "learning_rate": self.lr,
+            "num_layers": self.num_layers,
+            "num_classes": num_classes,
+            "batch_size": self.batch_size
+            }
+        wandb.watch(self)
+        for e in range(epochs):
+            print("at epoch", e)
+            runinngloss = 0.0
+            stepsperloss = 0
+            for i in range(math.ceil(len(X) / self.batch_size)):
+                start = time.time()
+                ul = min((i+1) * self.batch_size, len(X))
+                batch_x = X[i*self.batch_size: ul]
+                batch_y = y[i*self.batch_size: ul]
+                batch_x = self.tokenizer(batch_x, return_tensors="pt", padding=self.padding, max_length = 256, truncation = True)
+
+                batch_y = batch_y.to(device)
+                batch_x = batch_x.to(device)
+                self.optimizer.zero_grad()
+                # print(batch_x)
+                # print(batch_y)
+                y_pred = self(batch_x["input_ids"], mask = batch_x["attention_mask"].bool(),token_type_ids = batch_x["token_type_ids"])
+                # print(y_pred.shape)
+                # print(y_pred)
+                # print(batch_y)
+                loss = self.loss(y_pred, batch_y)    
+                loss.backward()
+
+                runinngloss += loss.item()
+                stepsperloss += 1
+                self.optimizer.step()
+                self.scheduler.step()
+                if i % np.max((1,int((len(X)/self.batch_size)*0.001))) == 0:
+                    wandb.log({"loss": runinngloss / stepsperloss})
+                 #   print("lr", self.scheduler.get_last_lr())
+                    wandb.log({"lr": self.scheduler.get_last_lr()[0]})
+                    with torch.no_grad():
+                        y_pred = torch.argmax(y_pred,dim = -1)
                         acc =  torch.sum(y_pred == batch_y)
                         wandb.log({"acc": acc.item()/self.batch_size})
                     print( runinngloss/ stepsperloss, "at", ul , "of", len(X), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(X) / self.batch_size) -i) * (time.time()-start))
@@ -415,8 +538,8 @@ class TransformerPredictor(nn.Module):
 
             batch_y = batch_y.to(device)
             batch_x = batch_x.to(device)
-            y_pred,_ = self(batch_x["input_ids"],seg_emb = batch_x["token_type_ids"], mask = batch_x["attention_mask"])
-            y_pred = torch.argmax(y_pred[:,0],dim = -1)
+            y_pred = self(batch_x["input_ids"], mask = batch_x["attention_mask"].bool(),token_type_ids = batch_x["token_type_ids"])
+            y_pred = torch.argmax(y_pred,dim = -1)
             acc = acc + torch.sum(y_pred == batch_y)
 
         acc = acc / len(X)

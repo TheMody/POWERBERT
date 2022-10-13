@@ -1,12 +1,12 @@
 [DEFAULT]
 batch_size = 16
 checkpoint = None
-directory = results/BERT
+directory = results/BERThourglass
 seed = 42
-epochs = 3
+epochs = 1
 num_trials = 50
 dataset = sst2
 reduce = False
-test = False
+test = True
 train = True
-load = results/BERT
+load = results/BERTpre1

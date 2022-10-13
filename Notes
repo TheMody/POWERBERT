@@ -1,0 +1,3 @@
+Ideen um Hourglass Transformer zu verbessern:
+Verhältniss von tiefe zu ff dim (Hypothese spätere layer profitieren von höherer Dim) (ResNEt verdoppelt ff size bei jedem pooling)
+Verhältniss von bester Reduktion bestimmen 

@@ -56,10 +56,11 @@ def test(args, config):
     X,X_val, _, y, y_val, _ = load_data(dataset)
     max_epochs = int(config["DEFAULT"]["epochs"])
     num_classes = 2
-    model = torch.load(config["DEFAULT"]["load"]+"/model.pt")
-    model.lr = 2e-5
-    # tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
-    # model = TransformerPredictor(tokenizer.vocab_size, 768, num_classes,12,12, batch_size= batch_size, reduce=reduce, lr = 2e-5).to(device)
+    # model = torch.load(config["DEFAULT"]["load"]+"/model.pt")
+    # model.lr = 2e-5
+    # model.batch_size = batch_size
+    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+    model = TransformerPredictor(tokenizer.vocab_size, 768, num_classes,12,12, batch_size= batch_size, reduce=reduce, lr = 2e-5).to(device)
     model.fit(X,y, max_epochs ,num_classes )
     torch.save(model, config["DEFAULT"]["directory"]+"/modelfine.pt")
     acc = model.evaluate(X_val, y_val)
