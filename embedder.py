@@ -354,15 +354,15 @@ class TransformerPredictor(nn.Module):
 
     def mask(self, input_ids, mask_token_id = 103):
         # create random array of floats in equal dimension to input_ids
-        rand = torch.rand(input_ids.shape) 
+        rand = torch.rand(input_ids.shape).to(device)
         # where the random array is less than 0.15, we set true
         mask_arr = (rand < 0.15) * (input_ids != 101) * (input_ids != 102)* (input_ids != 0)
-        mask_arr1 = (rand < 0.15*0.8)* (input_ids != 101) * (input_ids != 102)* (input_ids != 0)
+        mask_arr1 = (rand < 0.15*0.8)* (input_ids != 101) * (input_ids != 102)* (input_ids != 0) #* (mask_arr)
         mask_arr2 = (0.15*0.8 < rand)* (rand < 0.15*0.9)* (input_ids != 101) * (input_ids != 102)* (input_ids != 0)
       #  mask_arr3 = (0.15*0.9 < rand < 0.15)* (input_ids != 101) * (input_ids != 102)* (input_ids != 0) not needed since just nothing is done
 
         input_ids = torch.where(mask_arr1, mask_token_id, input_ids)#80% normal masking
-        input_ids = torch.where(mask_arr2, (torch.rand(1)* self.tokenizer.vocab_size).long(), input_ids)#10% random token
+        input_ids = torch.where(mask_arr2, (torch.rand(1, device = device)* self.tokenizer.vocab_size).long(), input_ids)#10% random token
         #last 10% is just original token and does not need to be replaced
         return input_ids, mask_arr
     
@@ -372,51 +372,60 @@ class TransformerPredictor(nn.Module):
         loss = self.loss(output, labels)
         return loss
 
-    def fitmlm(self,dataset, epochs, checkpoint_pth = None):
+    #todo test mlm results
+
+    def fitmlm(self,dataset, steps, checkpoint_pth = None):
         self.scheduler =CosineWarmupScheduler(optimizer= self.optimizer, 
-                                               warmup = 10000 ,
-                                                max_iters = math.ceil(len(dataset)*epochs  / self.batch_size))
-        wandb.init(project="my-test-project")
+                                               warmup = 3000 ,
+                                                max_iters = steps)
+        wandb.init(project="mlmwith-hourglass")
         wandb.watch(self)
         self.mode = "mlm"
-        for e in range(epochs):
-            print("at epoch", e)
-            runinngloss = 0.0
-            stepsperloss = 0
-            for i in range(math.ceil(len(dataset) / self.batch_size)):
-                start = time.time()
-                ul = min((i+1) * self.batch_size, len(dataset))
-                batch_x = dataset[i*self.batch_size: ul]
-                input = self.tokenizer(batch_x, return_tensors="pt", padding=True, max_length = 256, truncation = True)
-                labels = torch.clone(input["input_ids"])
-                input["input_ids"], mask = self.mask(input["input_ids"])
-                labels = torch.where(mask, labels, -100)
-                input = input.to(device)
-                labels = labels.to(device)
-                self.zero_grad()
-                # print(input)
-                # print(labels)
-                output = self(input["input_ids"], mask = input["attention_mask"].bool())
-            #    print(output.shape)
-                #labels = torch.cat( [labels[i,trackarray[i]].unsqueeze(0) for i in range(labels.shape[0])] )
+        runinngloss = 0.0
+        stepsperloss = 0
+        for i,data in enumerate(dataset):
+            start = time.time()
+            
+            input = self.tokenizer(data, return_tensors="pt", padding=True, max_length = 256, truncation = True)
+            input = input.to(device)
+            labels = torch.clone(input["input_ids"])
+            input["input_ids"], mask = self.mask(input["input_ids"])
+            labels = torch.where(mask, labels, -100)
 
-                loss = self.compute_mlm_loss(output,labels)
-                loss.backward()
-                stepsperloss += 1
-                runinngloss += loss.item()
-                self.optimizer.step()
-                self.scheduler.step()
-                if i % np.max((1,int((len(dataset)/self.batch_size)*0.001))) == 0:
-                    wandb.log({"loss": runinngloss / stepsperloss})
-                    wandb.log({"lr": self.scheduler.get_last_lr()[0]})
-                    with torch.no_grad():
-                        y_pred = torch.argmax(output,dim = -1)
-                        acc =  torch.sum(y_pred == labels)
-                        wandb.log({"acc": acc.item()/self.batch_size})
-                    print( runinngloss/ stepsperloss, "at", ul , "of", len(dataset), "time per step",time.time()-start, "estimated time until end of epoch", (math.ceil(len(dataset) / self.batch_size) -i) * (time.time()-start))
-                    runinngloss = 0.0
-                if not checkpoint_pth == None and i % np.max((1,int((len(dataset)/self.batch_size)*0.1))) == 0:
-                    torch.save(self, checkpoint_pth)
+            self.zero_grad()
+
+            output = self(input["input_ids"], mask = input["attention_mask"].bool())
+            loss = self.compute_mlm_loss(output,labels)
+            loss.backward()
+            stepsperloss += 1
+            runinngloss += loss.item()
+            self.optimizer.step()
+            self.scheduler.step()
+
+
+            # sentence = torch.argmax(output[0], dim = -1)
+            # strsent = self.tokenizer.decode(sentence)
+            # print("og sentence",data[0])
+            # print("pred sentence",strsent)
+            # pred = torch.masked_select(sentence, mask)
+            # sellabels = torch.masked_select(labels, mask)
+            # print("og words",self.tokenizer.decode(sellabels))
+            # print("pred words",self.tokenizer.decode(pred))
+            
+            if i % np.max((1,int(steps*0.001))) == 0:
+                wandb.log({"loss": runinngloss / stepsperloss})
+                wandb.log({"lr": self.scheduler.get_last_lr()[0]})
+                with torch.no_grad():
+                    y_pred = torch.argmax(output,dim = -1)
+                    acc =  torch.sum(y_pred == labels)
+                    wandb.log({"acc": acc.item()/self.batch_size})
+                print( runinngloss/ stepsperloss, "at", i , "of", steps, "time per step",time.time()-start, "estimated time until end of epoch", (steps -i) * (time.time()-start))
+                runinngloss = 0.0
+                stepsperloss = 0 
+            if not checkpoint_pth == None and i % np.max((1,int(steps*0.1))) == 0:
+                torch.save(self, checkpoint_pth)
+            if i >= steps:
+                break
 
 
     def oldfit(self,X,y, epochs, num_classes):

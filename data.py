@@ -1,5 +1,6 @@
 
 
+from random import shuffle
 import torch
 import tensorflow_datasets as tfds
 from sklearn.model_selection import train_test_split
@@ -189,11 +190,50 @@ def load_data(name="sst2"):
     return X,X_val, X_test, torch.LongTensor(y), torch.LongTensor(y_val), torch.LongTensor(y_test)
 
 def load_wiki():
-    data = tfds.load('wiki40b/en', split="train", shuffle_files=False)
-    
-    X = [str(e["text"].numpy()) for e in data]
+  #  data = tfds.load('wiki40b/en', split="train[:1000]", shuffle_files=False)
+    data = tfds.load('ag_news_subset', split="train[:1000]", shuffle_files=False)
+    X = [str(e["description"].numpy()) for e in data]
+    # import random
+    # random.shuffle(X)
     return X
 
+def load_wikiandbook(batch_size, tokenizer, max_model_length):
+    from datasets import concatenate_datasets, load_dataset
+
+    bookcorpus = load_dataset("bookcorpus", split="train")
+    wiki = load_dataset("wikipedia", "20220301.en", split="train")
+    wiki = wiki.remove_columns([col for col in wiki.column_names if col != "text"])  # only keep the 'text' column
+
+    assert bookcorpus.features.type == wiki.features.type
+    raw_datasets = concatenate_datasets([bookcorpus, wiki]) #ds is 5.000.000 *16 examples big
+#     from itertools import chain
+#     def group_texts(examples):
+#         # Concatenate all texts.
+#         concatenated_examples = {k: list(chain(*examples[k])) for k in examples.keys()}
+#         total_length = len(concatenated_examples[list(examples.keys())[0]])
+#         # We drop the small remainder, we could add padding if the model supported it instead of this drop, you can
+#         # customize this part to your needs.
+#         if total_length >= max_model_length:
+#             total_length = (total_length // max_model_length) * max_model_length
+#         # Split by chunks of max_len.
+#         result = {
+#             k: [t[i : i + max_model_length] for i in range(0, total_length, max_model_length)]
+#             for k, t in concatenated_examples.items()
+#         }
+#         return result
+
+#     tokenized_datasets = raw_datasets.map(group_texts, batched=True, num_proc=4)
+# # shuffle dataset
+
+#     tokenized_datasets = tokenized_datasets.shuffle(seed=34)
+
+ #   from tqdm import tqdm
+    def batch_iterator(batch_size=batch_size):
+        while True:
+            for i in range(0, len(raw_datasets), batch_size):
+                yield raw_datasets[i : i + batch_size]["text"]
+
+    return batch_iterator()
 
 from torch.utils.data import Dataset
 
